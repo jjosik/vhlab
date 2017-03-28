@@ -1,0 +1,949 @@
+function [ m_pref,m_null,AG_m_pref,AG_m_null,Vth_est_pcoll,Vth_est_ncoll,...
+    p_subth_std,n_subth_std ] = invivo_subth_rerun( save_it,overwrite,model,...
+    use_pre_analyzed,display_spikes,use_flankers,use_exclusive_AG,...
+    analyze_bycycle,auto_detect,use_detrend,sub_folder,cur_dir,default,...
+    use_global_filter,filter_type,use_flanktest,adapt_bins,anchor_Vth,fit_it)
+%UNTITLED3 Summary of this function goes here
+    %   Detailed explanation goes here
+  
+%disp(['looking in file: ' [subfolder filesep cur_dir filesep 'analyzed_spike.mat']]);
+%whos([subfolder filesep cur_dir filesep 'analyzed_spike.mat']),
+try
+    load([sub_folder filesep cur_dir filesep 'analyzed_spike.mat'],'reps');
+catch
+    load([pwd filesep 'analyzed_spike.mat'],'reps');
+end
+try 
+    load([sub_folder filesep cur_dir filesep 'analyzed_spike.mat'],'tempFrequency');
+catch
+    load([pwd filesep 'analyzed_spike.mat'],'tempFrequency');
+end
+if use_pre_analyzed == 1,
+    saved_analysis = uigetfile('*.mat');
+    if saved_analysis == 0,
+        m_pref = NaN;
+        m_null = NaN;
+        Vth_est_pcoll = NaN;
+        Vth_est_ncoll = NaN;
+        %p_subth_CV = NaN;
+        %n_subth_CV = NaN;
+        p_subth_std = NaN;
+        n_subth_std = NaN;
+        return;
+    else
+    end
+    load(saved_analysis);
+    
+    %if overwrite == 0,
+    %    d = dir(pwd);
+    %    isub = [d(:).isdir];
+    %    sub_d = {d(isub).name}';
+    %    target = ['rerun_',char(datetime('today'))];
+    %    if ~any(strcmp(target,sub_d)),
+    %        mkdir(['rerun_',char(datetime('today'))]);
+    %        cd(['rerun_',char(datetime('today'))]);
+    %    else
+    %        cd(['rerun_',char(datetime('today'))]);
+    %    end
+    %else
+    %end
+else
+    
+    spike_prefile = 'analyzed_spike.mat';
+    stims = 'stims.mat';
+    stimsv = 'stimvalues.mat';
+    stimso = 'stimorder.mat';
+    data = 'data.mat';
+        
+    [waveform_dnlp,sample_interval,stimvalues,stimorder,nStim_ON,nStim_OFF,...
+        otpref_total,stim_duration,reps_stimmatch,p] = prep_rawspikes(reps,spike_prefile,...
+        stims,stimsv,stimso,data);
+
+    %if overwrite == 0,
+    %    d = dir(pwd);
+    %    isub = [d(:).isdir];
+    %    sub_d = {d(isub).name}';
+    %    target = ['rerun_',char(datetime('today'))];
+    %    if ~any(strcmp(target,sub_d)),
+    %        mkdir(['rerun_',char(datetime('today'))]);
+    %        cd(['rerun_',char(datetime('today'))]);
+    %    else
+    %        cd(['rerun_',char(datetime('today'))]);
+    %    end
+    %else
+    %end
+
+    sampling_rate = round(1/sample_interval);
+    t_vec = sample_interval:sample_interval:...
+        (length(waveform_dnlp)*sample_interval);
+    reset2phys = 1;
+    if ~exist('spike_trace'),
+        spike_trace = waveform_dnlp;
+    else
+    end
+    
+    [spike_locations,h_margins] = find_spikes(spike_trace,t_vec,...
+        sampling_rate,display_spikes,auto_detect);
+
+    %*******Assess biophysical spike threshold using Azouz & Gray, 1999
+    %*******methods****************************************************
+    %******************************************************************
+        
+   [th_loc,Vm_th,new_trace,sub_wv] = get_thresholds(spike_trace,t_vec,...
+       spike_locations,sample_interval,use_detrend,reset2phys);
+   
+   %***Assess Azouz & Gray method of threshold wrt pre-trial baselines
+   %(output array is ordered by full presentation stimulus trial order)
+   [AG_Vm_th,trial_baseline,trial_epochbase] = ...
+       pretrial_baseline_thresholds(spike_trace,t_vec,spike_locations,...
+       th_loc,Vm_th,sample_interval,stimvalues,stimorder,nStim_ON,nStim_OFF);
+    
+    %%
+    %*****Remove spikes to get raw Vm traces and trial-averaged Vm trace**
+    %*********************************************************************
+    
+    [Vm_waveform,Vm_array] = extract_Vm(waveform_dnlp,sub_wv,sample_interval,...
+        h_margins,stimvalues,nStim_ON,nStim_OFF,stimorder,reps,use_detrend);
+
+    %%
+   
+    stim_rasters = align_rasters(spike_locations,stimvalues,stimorder,...
+        nStim_ON,nStim_OFF,sampling_rate);
+    
+    %%
+    %ID 'Pref' and 'Null' stimulus directions
+    if ~exist('pref_stim','var')>0,
+        try
+            pref_stim = otpref_total;
+        catch
+            pref_stim = otpref_1;
+        end
+        null_stim = pref_stim+180;
+        if null_stim>=360,
+            null_stim = null_stim-360;
+        else
+        end
+     else
+     end
+    %%
+    if default > 0,
+        VF_type = default;
+    else
+        VF_type = input(['Enter ''1'' for conventional V-F plot, ''2''',...
+            ' for maximally sampled/instantaneous FR V-F plot: ']);
+    end
+    pref_ind = find(stimvalues==pref_stim);
+    null_ind = find(stimvalues==null_stim);
+
+    switch VF_type
+    
+        case 1
+            
+            [f,f_temp] = temporal_conv_VF(Vm_array,...
+                be_array,stimvalues,sample_interval,psth_array,save_it);
+            
+        case 2
+        
+            %[FR_inst,opt_w] = rasters2instFR(stimvalues,stimorder,...
+            %    stim_duration,spike_locations,t_vec,sampling_rate,nStim_ON,...
+            %    nStim_OFF,reps_stimmatch,save_it,use_global_filter,filter_type,...
+            %    pref_ind); 
+            %alt.
+            [FR_inst,opt_w] = rasters2instFR_global3(stimvalues,stimorder,...
+                stim_duration,spike_locations,t_vec,sampling_rate,nStim_ON,...
+                nStim_OFF,reps_stimmatch,save_it,use_global_filter,filter_type,...
+                pref_ind,null_ind);
+            %NOTE -- rasters2instFR_global3 is testing;
+            %raster2instFR_global2 has been tested and confirmed, but
+            %requires alteration to exhibit the functionality directly
+            %introduced by ...global3
+            if ~exist('tempFrequency','var'),
+                tempFrequency = p.tFrequency;
+            else
+            end
+            [Vth_est_pcoll,Vth_est_ncoll] = fitVF_maxsamp_bystim(FR_inst,Vm_array,...
+                stimvalues,model,h_margins,stimorder,nStim_ON,nStim_OFF,sampling_rate,...
+                pref_stim,pref_ind,null_stim,null_ind,tempFrequency,use_flanktest,...
+                adapt_bins,anchor_Vth,fit_it,filter_type,save_it);
+    
+    end
+end
+
+%**********************************************************************
+%********END OF BLOCK CHOOSING SAVED VS. NEW ANALYSIS******************
+%**********************************************************************
+
+
+
+%block to cover both conditions where threshold timing may be saved under
+%'threshold' variable name or under 'th_loc'
+if exist('threshold','var')&&~exist('th_loc','var'),
+    th_loc = threshold;
+else
+end
+%sort out spontaneous spike epochs and respective spike locations
+stim_th = [];
+spont_th = [];
+opening_set = find(th_loc<(nStim_ON(1,1)/sample_interval));
+spont_locs = [];
+for qq = 1:length(nStim_ON),
+    if ~isnan(nStim_OFF(qq,1)),
+        stim_set = find((th_loc>...
+            (nStim_ON(qq,1)/sample_interval))&...
+            (th_loc<(nStim_OFF(qq,1)/sample_interval)));
+        stim_th = [stim_th;Vm_th(stim_set,1)];
+        if qq < length(nStim_ON),
+            spont_set = find((th_loc>...
+                (nStim_OFF(qq,1)/sample_interval))&...
+                (th_loc<(nStim_ON(qq+1,1)/sample_interval)));
+        else
+            spont_set = find((th_loc>...
+                (nStim_OFF(qq,1)/sample_interval)));
+        end
+        spont_th = [spont_th;Vm_th(spont_set,1)];
+        spont_locs = [spont_locs;th_loc(spont_set,1)];
+    else
+    end
+end
+%ID 'Pref' and 'Null' stimulus directions
+if ~exist('pref_stim','var')>0,
+    try
+        pref_stim = otpref_total;
+    catch
+        pref_stim = otpref_1;
+    end
+    null_stim = pref_stim+180;
+    if null_stim>=360,
+        null_stim = null_stim-360;
+    else
+    end
+else
+end
+%create collated stimulus indexing that excludes spontaneous trials
+pref_ind = find(stimvalues==pref_stim);
+null_ind = find(stimvalues==null_stim);
+all_dirind = 1:length(stimvalues)-1;
+down_ = circshift(stimvalues(1,1:length(stimvalues)-1),1,2);
+up_ = circshift(stimvalues(1,1:length(stimvalues)-1),-1,2);
+down_i = circshift(all_dirind,1,2);
+up_i = circshift(all_dirind,-1,2);
+pref_set = [down_(pref_ind);pref_stim;up_(pref_ind)];
+null_set = [down_(null_ind);null_stim;up_(null_ind)];
+pref_set_index = [down_i(pref_ind);pref_ind;up_i(pref_ind)];
+null_set_index = [down_i(null_ind);null_ind;up_i(null_ind)];
+ 
+if use_flankers == 1,
+%Partition thresholds by 3 categories:  Spont., Pref, Null
+%*****IMPORTANT: RESULTING ARRAY ORDER ALWAYS PROCEEDS IN THE FOLLOWING
+%*****ROW SEQUENCE - (THETA-1)*NUM REPS , THETA*NUM REPS , (THETA+1)*NUM REPS 
+%*****(WHERE THETA = PEAK PREF. DIRECTION) **********************
+    pref_th = [];
+    null_th = [];
+    AG_pref_th = [];        %variant for AG relative threshold
+    AG_null_th = [];        %variant for AG relative threshold
+    pref_set = {};
+    null_set = {};
+    AG_pref_set = {};
+    AG_null_set = {};
+    excl_AG_pref_set = {};
+    excl_AG_null_set = {};
+    for ii = 1:length(pref_set_index),
+        pstim_locs = find(stimorder==pref_set_index(ii,1));
+        for iii = 1:length(pstim_locs),
+            pref_set{end+1,1} = find(th_loc>...
+                (nStim_ON(pstim_locs(1,iii),1)/sample_interval)&...
+                (th_loc<(nStim_OFF(pstim_locs(1,iii),1)/...
+                sample_interval)));
+            AG_pref_set{end+1,1} = AG_Vm_th{pstim_locs(1,iii),1};
+            if ii == 2,
+                excl_AG_pref_set{end+1,1} = AG_Vm_th{pstim_locs(1,iii),1};
+            else
+            end
+        end
+        pref_th = [pref_th;Vm_th(cell2mat(pref_set),1)];
+        AG_pref_th = cell2mat(AG_pref_set);
+        excl_AG_pref_th = cell2mat(excl_AG_pref_set);
+    end
+    AG_pref_th = cell2mat(AG_pref_set);
+    excl_AG_pref_th = cell2mat(excl_AG_pref_set);
+    for ii = 1:length(null_set_index),
+        nstim_locs = find(stimorder==null_set_index(ii,1));
+        for iii = 1:length(nstim_locs),
+            null_set{end+1,1} = find(th_loc>...
+                (nStim_ON(nstim_locs(1,iii),1)/sample_interval)&...
+                (th_loc<(nStim_OFF(nstim_locs(1,iii),1)/...
+                sample_interval)));
+            AG_null_set{end+1,1} = AG_Vm_th{nstim_locs(1,iii),1};
+            if ii == 2,
+                excl_AG_null_set{end+1,1} = AG_Vm_th{nstim_locs(1,iii),1};
+            else
+            end
+        end
+        null_th = [null_th;Vm_th(cell2mat(null_set),1)];
+    end
+    AG_null_th = cell2mat(AG_null_set);
+    excl_AG_null_th = cell2mat(excl_AG_null_set);
+else
+end
+
+%generate plot of threshold comparisons by stimulus for the cell
+f6 = figure;
+if use_pre_analyzed,
+    pref_x = 3.0+(rand(length(pref_th),1)-0.5);
+    null_x = 5.0+(rand(length(null_th),1)-0.5);
+    s = scatter(spont_x,spont_th,'filled');
+    hold on;
+    sp = scatter(pref_x,pref_th,'filled');
+    sn = scatter(null_x,null_th,'filled');
+    s.MarkerFaceColor = [0.2,0.2,0.2];
+    sp.MarkerFaceColor = [0.7, 0, 0];
+    sn.MarkerFaceColor = [0, 0, 0.9];
+    m_pref = mean(pref_th);
+    m_null = mean(null_th);
+    sd_pref = std(pref_th);
+    sd_null = std(null_th);
+    sem_pref = std(pref_th)/sqrt(length(pref_th));
+    sem_null = std(null_th)/sqrt(length(null_th));
+    errorbar(1.4,m_spont,sem_spont);
+    %bar(1.0,m_spont);
+    %boxplot([spont_th,pref_th,null_th],'Labels',{'Spont.','Pref.','Null'},...
+    %    'Positions',[1,3,5]);
+    boxplot(spont_th,'Positions',0.3);
+    boxplot(pref_th,'Positions',2.3);
+    boxplot(null_th,'Positions',4.3);
+    errorbar(3.4,m_pref,sem_pref);
+    %bar(3.0,m_pref);
+    errorbar(5.4,m_null,sem_null);
+    xlim([0 5]);
+    ylim([-100 0]);
+    %bar(5.0,m_null);
+    ax = gca;
+    ax.XTick = ([1 3 5]);
+    ax.XTickLabel = {'Spont.','Pref','Null'};
+    ylabel('Membrane potential (mV)');
+else
+    pref_x = 1.0+(rand(length(pref_th),1)-0.5);
+    null_x = 3.0+(rand(length(null_th),1)-0.5);
+    sp = scatter(pref_x,pref_th,'filled');
+    hold on;
+    sn = scatter(null_x,null_th,'filled');
+    sp.MarkerFaceColor = [0.7, 0, 0];
+    sn.MarkerFaceColor = [0, 0, 0.9];
+    m_pref = mean(pref_th);
+    m_null = mean(null_th);
+    sd_pref = std(pref_th);
+    sd_null = std(null_th);
+    sem_pref = std(pref_th)/sqrt(length(pref_th));
+    sem_null = std(null_th)/sqrt(length(null_th));
+    boxplot(pref_th,'Positions',2.3);
+    boxplot(null_th,'Positions',4.3);
+    errorbar(1.4,m_pref,sem_pref);
+    %bar(3.0,m_pref);
+    errorbar(3.4,m_null,sem_null);
+    xlim([0 5]);
+    ylim([-100 0]);
+    %bar(5.0,m_null);
+    ax = gca;
+    ax.XTick = ([1 3]);
+    ax.XTickLabel = {'Pref','Null'};
+    ylabel('Membrane potential (mV)');
+end
+    [~,p] = ttest2(pref_th,null_th);
+    title(['Threshold potential Pref/Null t-test: p = ',num2str(p)]);
+if save_it == 1,
+    saveas(gcf,[pwd filesep 'threshold_Comp.fig']);
+    close(f6);
+else
+end
+th_data = [pref_th;null_th];
+g_ = [ones(size(pref_th));2.*ones(size(null_th))];
+p_ = anova1(th_data,g_);
+
+if use_exclusive_AG == 1,
+    AG_pref_save = AG_pref_th;
+    AG_null_save = AG_null_th;
+    AG_pref_th = excl_AG_pref_th;
+    AG_null_th = excl_AG_null_th;
+else
+end
+
+%generate alternative plot of relative AG threshold comparisons by stim.
+f7 = figure;
+ag_pref_x = 1.0+(rand(length(AG_pref_th),1)-0.5);
+ag_null_x = 3.0+(rand(length(AG_null_th),1)-0.5);
+rsp = scatter(ag_pref_x,AG_pref_th,'filled');
+hold on;
+rsn = scatter(ag_null_x,AG_null_th,'filled');
+rsp.MarkerFaceColor = [0.7, 0, 0];
+rsn.MarkerFaceColor = [0, 0, 0.9];
+AG_m_pref = mean(AG_pref_th);
+AG_m_null = mean(AG_null_th);
+AG_sd_pref = std(AG_pref_th);
+AG_sd_null = std(AG_null_th);
+AG_sem_pref = AG_sd_pref/sqrt(length(AG_pref_th));
+AG_sem_null = AG_sd_null/sqrt(length(AG_null_th));
+boxplot(AG_pref_th,'Positions',2.3);
+boxplot(AG_null_th,'Positions',4.3);
+errorbar(1.4,AG_m_pref,AG_sem_pref);
+errorbar(3.4,AG_m_null,AG_sem_null);
+xlim([0 5]);
+ylim([-20 20]);
+ax = gca;
+ax.XTick = ([1 3]);
+ax.XTickLabel = {'Pref','Null'};
+ylabel('Membrane potential (mV)');
+try
+    [~,p_a] = ttest2(AG_pref_th,AG_null_th);
+catch
+    p_a = NaN;
+end
+title(['Pre-stim. relative threshold Vm Pref/Null t-test: p = ',num2str(p_a)]);
+if save_it == 1,
+    saveas(gcf,[pwd filesep 'AG_relThreshold_Comp.fig']);
+    close(f7);
+else
+end
+ag_th_data = [AG_pref_th;AG_null_th];
+gg_ = [ones(size(AG_pref_th));2.*ones(size(AG_null_th))];
+try
+    p_aa = anova1(ag_th_data,gg_);
+catch
+    p_aa = NaN;
+end
+
+
+
+%
+        %PREF SET
+        %
+        p_subth_mean = [];
+        p_matched_th = [];
+        p_el_record = [];
+        p_subth_std = [];
+        p_subth_CV = [];
+        p_subth_rms = [];
+        p_matched_isi = {};
+        matched_slope = [];
+        for a = 1:length(pref_set),
+            p_matched_isi{end+1,1} = diff(th_loc(pref_set{a,1})).*...
+                sample_interval;
+            for b = 2:length(pref_set{a,1}),
+                p_epoch_length = (th_loc(pref_set{a,1}(b,1))-...
+                    round(0.004/sample_interval))-...
+                    (th_loc(pref_set{a,1}(b-1,1))+round(0.004/sample_interval));
+                slope_range = (th_loc(pref_set{a,1}(b,1))-...
+                    round(0.005/sample_interval)):th_loc(pref_set{a,1}(b,1));
+                d_vec = first_deriv((Vm_waveform(slope_range)./...
+                    1000),sample_interval);
+                matched_slope(end+1) = mean(d_vec);
+                if p_epoch_length <= 0,
+                    p_subth_mean(end+1,1) = NaN;
+                    p_subth_std(end+1,1) = NaN;
+                    p_matched_th(end+1,1) = NaN;
+                else
+                    p_subth_epoch = [(th_loc(pref_set{a,1}(b-1,1))+...
+                        round(0.004/sample_interval)):1:...
+                        (th_loc(pref_set{a,1}(b,1))-...
+                        round(0.004/sample_interval))];
+                    p_subth_mean(end+1,1) = mean(Vm_waveform(p_subth_epoch));
+                    p_subth_std(end+1,1) = std(Vm_waveform(p_subth_epoch));
+                    p_subth_CV(end+1,1) = std(Vm_waveform(p_subth_epoch))./mean(Vm_waveform(p_subth_epoch));
+                    p_subth_rms(end+1,1) = sqrt(sum(Vm_waveform(p_subth_epoch).^2)./length(p_subth_epoch));
+                    p_matched_th(end+1,1) = Vm_th(pref_set{a,1}(b,1),1);
+                end
+                p_el_record(end+1) = p_epoch_length;
+            end
+        end
+        flag_inds = find(isnan(p_subth_mean));
+        if ~isempty(flag_inds),
+            p_subth_mean(flag_inds) = [];
+            p_subth_std(flag_inds) = [];
+            p_matched_th(flag_inds) = [];
+        else
+        end
+        %compute spike-triggered average Vm (PREF)
+        sta_win = -round(0.05/sample_interval):1:round(0.05/sample_interval);
+        sta_vm_pre = zeros(length(sta_win),1);
+        spike_count = 0;
+        for a = 1:length(pref_set),
+            for b = 2:length(pref_set{a,1})-1,
+                spike_count = spike_count + 1;
+                st_Vmind = [(th_loc(pref_set{a,1}(b,1))-...
+                    round(0.05/sample_interval)):1:(th_loc(pref_set{a,1}(b,1))+...
+                    round(0.05/sample_interval))];
+                st_Vmsamp = Vm_waveform(st_Vmind');
+                sta_vm_pre = sta_vm_pre + st_Vmsamp;
+            end
+        end
+        sta_vm = sta_vm_pre./spike_count;
+        t_win = -0.05:(0.05/round(0.05/sample_interval)):0.05;
+        f2 = figure;
+        plot(t_win,sta_vm,'k');
+        xlabel('Time (sec)');
+        ylabel('Membrane potential (mV)');
+        title('Spike-triggered average Vm, PREF');
+        if save_it == 1,
+            saveas(gcf,[pwd filesep 'pref_STAVm.fig']);
+            close(f2);
+        else
+        end
+        
+        
+        
+
+        %new figures  -- NOTE: threshold here is biophysical
+        % Vm mean vs. Vm STD
+        smf = figure;
+        scatter(p_subth_mean,p_subth_std,'k','filled');
+        hold on;
+        xlabel('Vm mean (PREF)');
+        ylabel('Vm STD (PREF)');
+        hold off;
+        if save_it == 1,
+            saveas(gcf,[pwd filesep 'pref_Vmmean_vs_STD.fig']);
+            close(smf);
+        else
+        end
+        %Vm mean vs. Vm CV
+        cmf = figure;
+        scatter(p_subth_mean,p_subth_CV,'k','filled');
+        hold on;
+        xlabel('Vm mean (PREF)');
+        ylabel('Vm CV (PREF)');
+        xlim([-100 -40]);
+        ylim([-0.2 0]);
+        hold off;
+        if save_it == 1,
+            saveas(gcf,[pwd filesep 'pref_Vmmean_vs_CV.fig']);
+            close(cmf);
+        else
+        end
+        %Vm STD vs. threshold
+        stf = figure;
+        scatter(p_subth_std,p_matched_th,'k','filled');
+        hold on;
+        xlabel('Vm STD (PREF)');
+        ylabel('Following spike threshold (mV)');
+        hold off;
+        if save_it == 1,
+            saveas(gcf,[pwd filesep 'pref_VmSTD_vs_TH.fig']);
+            close(stf);
+        else
+        end
+        %Vm CV vs. threshold
+        ctf = figure;
+        scatter(p_subth_CV,p_matched_th,'k','filled');
+        hold on;
+        xlabel('Vm CV (PREF)');
+        ylabel('Following spike threshold (mV)');
+        xlim([-0.2 0]);
+        ylim([-100 -40]);
+        hold off;
+        if save_it == 1,
+            saveas(gcf,[pwd filesep 'pref_VmCV_vs_TH.fig']);
+            close(ctf);
+        else
+        end
+        
+        %NULL SET
+        %
+        n_subth_mean = [];
+        n_matched_th = [];
+        n_el_record = [];
+        n_subth_std = [];
+        n_subth_CV = [];
+        n_subth_rms = [];
+        n_matched_isi = [];
+        nmatched_slope = [];
+        for aa = 1:length(null_set),
+            n_matched_isi{end+1,1} = ...
+                diff(th_loc(null_set{aa,1})).*sample_interval;
+            for bb = 2:length(null_set{aa,1}),
+                n_epoch_length = ...
+                    (th_loc(null_set{aa,1}(bb,1))-round(0.004/sample_interval))-...
+                    (th_loc(null_set{aa,1}(bb-1,1))+round(0.004/sample_interval));
+                nslope_range = ...
+                    (th_loc(null_set{aa,1}(bb,1))-...
+                    round(0.005/sample_interval)):th_loc(null_set{aa,1}(bb,1));
+                %pfn = polyfit(sample_interval*(1:length(nslope_range))',Vm_waveform(nslope_range)./1000,1);
+                d_vec = ...
+                    first_deriv((Vm_waveform(nslope_range)./1000),sample_interval);
+                %nmatched_slope(end+1) = pfn(1,1);
+                nmatched_slope(end+1) = mean(d_vec);
+                if n_epoch_length <= 0,
+                    n_subth_mean(end+1,1) = NaN;
+                    n_matched_th(end+1,1) = NaN;
+                    n_subth_std(end+1,1) = NaN;
+                else
+                    n_subth_epoch = [(th_loc(null_set{aa,1}(bb-1,1))+...
+                        round(0.004/sample_interval)):1:...
+                        (th_loc(null_set{aa,1}(bb,1))-...
+                        round(0.004/sample_interval))];
+                    n_subth_mean(end+1,1) = mean(Vm_waveform(n_subth_epoch));
+                    n_subth_std(end+1,1) = std(Vm_waveform(n_subth_epoch));
+                    n_subth_CV(end+1,1) = std(Vm_waveform(n_subth_epoch))./mean(Vm_waveform(n_subth_epoch));
+                    n_subth_rms(end+1,1) = sqrt(sum(Vm_waveform(n_subth_epoch)))./length(n_subth_epoch);
+                    n_matched_th(end+1,1) = Vm_th(null_set{aa,1}(bb,1),1);
+                end
+                n_el_record(end+1) = n_epoch_length;
+            end
+        end
+        nflag_inds = find(isnan(n_subth_mean));
+        if ~isempty(nflag_inds),
+            n_subth_mean(nflag_inds) = [];
+            n_subth_std(nflag_inds) = [];
+            n_matched_th(nflag_inds) = [];
+        else
+        end
+        %compute spike-triggered average Vm (NULL)
+        sta_win = -round(0.05/sample_interval):1:round(0.05/sample_interval);
+        nsta_vm_pre = zeros(length(sta_win),1);
+        nspike_count = 0;
+        for c = 1:length(null_set),
+            for d = 2:length(null_set{c,1})-1,
+                nspike_count = nspike_count + 1;
+                nst_Vmind = [(th_loc(null_set{c,1}(d,1))-...
+                    round(0.05/sample_interval)):1:(th_loc(null_set{c,1}(d,1))+...
+                    round(0.05/sample_interval))];
+                nst_Vmsamp = Vm_waveform(nst_Vmind');
+                nsta_vm_pre = nsta_vm_pre + nst_Vmsamp;
+            end
+        end
+        nsta_vm = nsta_vm_pre./nspike_count;
+        t_win = -0.05:(0.05/round(0.05/sample_interval)):0.05;
+        f3 = figure;
+        plot(t_win,nsta_vm,'k');
+        xlabel('Time (sec)');
+        ylabel('Membrane potential (mV)');
+        title('Spike-triggered average Vm, NULL');
+        if save_it == 1,
+            saveas(gcf,[pwd filesep 'null_STAVm.fig']);
+            close(f3);
+        else
+        end
+        %pref/null sta overlay
+        f4 = figure;
+        plot(t_win,sta_vm,'r');
+        hold on;
+        plot(t_win,nsta_vm,'b');
+        xlabel('Time (sec)');
+        ylabel('Membrane potential (mV)');
+        legend('PREF','NULL','Location','NorthWest');
+        title('Spike-triggered average Vm, PREF/NULL');
+        if save_it == 1,
+            saveas(gcf,[pwd filesep 'STAVm_PrefNull.fig']);
+            close(f4);
+        else
+        end
+        
+        
+        % Vm mean vs. Vm STD
+        nsmf = figure;
+        scatter(n_subth_mean,n_subth_std,'k','filled');
+        hold on;
+        xlabel('Vm mean (NULL)');
+        ylabel('Vm STD (NULL)');
+        hold off;
+        if save_it == 1,
+            saveas(gcf,[pwd filesep 'null_Vmmean_vs_STD.fig']);
+            close(nsmf);
+        else
+        end
+        %Vm mean vs. Vm CV
+        ncmf = figure;
+        scatter(n_subth_mean,n_subth_CV,'k','filled');
+        hold on;
+        xlabel('Vm mean (NULL)');
+        ylabel('Vm CV (NULL)');
+        xlim([-100 -40]);
+        ylim([-0.2 0]);
+        hold off;
+        if save_it == 1,
+            saveas(gcf,[pwd filesep 'null_Vmmean_vs_CV.fig']);
+            close(ncmf);
+        else
+        end
+        %Vm STD vs. threshold
+        nstf = figure;
+        scatter(n_subth_std,n_matched_th,'k','filled');
+        hold on;
+        xlabel('Vm STD (NULL)');
+        ylabel('Following spike threshold (mV)');
+        hold off;
+        if save_it == 1,
+            saveas(gcf,[pwd filesep 'null_VmSTD_vs_TH.fig']);
+            close(nstf);
+        else
+        end
+        %Vm CV vs. threshold
+        nctf = figure;
+        scatter(n_subth_CV,n_matched_th,'k','filled');
+        hold on;
+        xlabel('Vm CV (NULL)');
+        ylabel('Following spike threshold (mV)');
+        xlim([-0.2 0]);
+        ylim([-100 -40]);
+        hold off;
+        if save_it == 1,
+            saveas(gcf,[pwd filesep 'null_VmCV_vs_TH.fig']);
+            close(nctf);
+        else
+        end
+        
+if analyze_bycycle == 1,
+     
+    
+    %**********************CREATE CYCLE TRACES****************************
+    %*********************************************************************
+    [mti2_,starttime_] = tpcorrectmti(MTI2,[sub_folder...
+        filesep directories filesep 'stimtimes.txt'],1);
+    format long
+    frameRate = 1/60;
+    for i2 = 1:length(stimvalues)-1,
+        N_trialFrames = length(mti2_{1,i2}.frameTimes);
+        N_cycleFrames = N_trialFrames/nCycles(1,1);
+        pad_nFrames = 3;
+        c_rep_locs = find(stimorder == i2);
+        for k2 = 1:length(c_rep_locs),
+            for ii2 = 1:nCycles(1,1),
+                c_light = ...
+                    round((nStim_ON(c_rep_locs(1,k2),1)+...
+                    (N_cycleFrames*frameRate*(ii2-1)))/sample_interval);
+                c_a = ...
+                    c_light-round((pad_nFrames*frameRate)/sample_interval);
+                c_light_off = round((nStim_ON(c_rep_locs(1,k2),1)+...
+                    ((N_cycleFrames/2)*frameRate*(ii2)))/sample_interval);
+                c_b = round((nStim_ON(c_rep_locs(1,k2),1)+...
+                    (N_cycleFrames*frameRate*ii2))/sample_interval)+...
+                    round((pad_nFrames*frameRate)/sample_interval);
+                cycle_array_tvec{i2,ii2,k2} = ...
+                    [0:sample_interval:sample_interval*(c_b-c_a)];
+                if detrend == 1,
+                    cycle_array_Sp{i2,ii2,k2} = sub_wv(c_a:c_b,1);
+                else
+                    cycle_array_Sp{i2,ii2,k2} = waveform_dnlp(c_a:c_b,1);
+                end
+                cycle_array_Vm{i2,ii2,k2} = Vm_waveform(c_a:c_b,1);
+                c_a_array(i2,ii2,k2) = c_a*sample_interval;
+                c_b_array(i2,ii2,k2) = c_b*sample_interval;
+                rel_light_array(i2,ii2,k2) = (c_light-c_a)*sample_interval;
+                abs_light_array(i2,ii2,k2) = c_light;
+                rel_light_off_array(i2,ii2,k2) = ...
+                    (c_light_off-c_a)*sample_interval;
+                abs_light_off_array(i2,ii2,k2) = c_light_off;
+            end
+        end
+    end
+    %use full trace to visually inspect light on locations
+    figure;
+    if detrend == 1,
+        plot(t_vec,sub_wv,'k');
+    else
+        plot(t_vec,waveform_dnlp,'k');
+    end
+    hold on;
+    for k3 = 1:size(rel_light_array,1),
+        c_rep_locs = find(stimorder == k3);
+        for k4 = 1:length(c_rep_locs),
+            for k5 = 1:nCycles(1,1),
+                line([(abs_light_array(k3,k5,k4)*...
+                    sample_interval) (abs_light_array(k3,k5,k4)*...
+                    sample_interval)],[-150 50]);
+            end
+        end
+    end
+    %find cycle CV of ISIs   (consider adding CV2 here to account for
+    %'burstiness'; see Holt et al. 1996)
+    stim_collected_cycles = cell(length(stimvalues)-1,1);
+    %within_cycle_CV2 = NaN(length(stimvalues)-1,nCycles(1,1),stimmatch_reps);  ***
+    within_cycle_CV2 = NaN(length(stimvalues)-1,nCycles(1,1),length(reps));
+    for k3 = 1:length(stimvalues)-1,
+        stacked_stimcycle = [];
+        c_rep_locs = find(stimorder == k3);
+        collected_rep_ISIs = [];
+        for k4 = 1:length(c_rep_locs),
+            collected_trial_ISIs = [];
+            for k5 = 1:nCycles(1,1),
+                if k5 < nCycles(1,1),
+                    s_i = ...
+                        spike_locations(find((abs_light_array(k3,k5,k4)<...
+                        spike_locations)&(spike_locations<...
+                        abs_light_array(k3,k5+1,k4))));
+                    stacked_stimcycle = ...
+                        [stacked_stimcycle;(s_i-abs_light_array(k3,k5,k4))];
+                    N_cycle_spikes(k3,k5,k4) = length(s_i);
+                else
+                    s_i = ...
+                        spike_locations(find((spike_locations>...
+                        abs_light_array(k3,k5,k4))&(spike_locations<...
+                        abs_light_array(k3,k5,k4)+...
+                        ((N_cycleFrames*frameRate)/sample_interval))));
+                    stacked_stimcycle = ...
+                        [stacked_stimcycle;(s_i-abs_light_array(k3,k5,k4))];
+                    N_cycle_spikes(k3,k5,k4) = length(s_i);
+                end
+                cycle_ISIs = diff(s_i).*sample_interval;
+                if ~isempty(cycle_ISIs),
+                    within_cycle_CV(k3,k5,k4) = ...
+                        std(cycle_ISIs)/mean(cycle_ISIs);
+                    within_cycle_CV2(k3,k5,k4) = ...
+                        nanmean((2.*abs(cycle_ISIs(2:end)-cycle_ISIs(1:end-1)))./...
+                        (cycle_ISIs(1:end-1)+cycle_ISIs(2:end)));
+                    collected_trial_ISIs = [collected_trial_ISIs;cycle_ISIs];
+                else
+                end
+            end
+            collected_rep_ISIs = [collected_rep_ISIs;collected_trial_ISIs];
+        end
+        collected_ISIs{k3,1} = collected_rep_ISIs;
+        bystim_cycle_CV{k3,1} = ...
+            std(collected_rep_ISIs)/mean(collected_rep_ISIs);
+        stim_collected_cycles{k3,1} = sort(stacked_stimcycle);
+    end
+    f = figure;
+    for i8 = 1:length(collected_ISIs),
+        scatter(repmat(stimvalues(1,i8),...
+            length(collected_ISIs{i8,1}),1),collected_ISIs{i8,1}(:),'k');
+        hold on;
+    end
+    xlim([0 360]);
+    xlabel('Direction angle');
+    ylabel('Cycle-framed ISIs (sec.)');
+    if save_it == 1,
+        saveas(gcf,[pwd filesep 'CycleISIDists_byStim.fig']);
+        close(f);
+    else
+    end
+    %REGARDING CV2 MEASUREMENT - begin with time-dep. CV2 (a value that
+    %varies in real-time and is a comparison of adjacent ISIs), get a
+    %single CV2 measurement for each cycle by averaging time-dep. CV2s over
+    %the cycle; then split analysis into median CV2 across reps. (i.e.
+    %matched-cycles) or through trial (i.e. matched-trials)
+    %plot CV2 by stim
+    f = figure;
+    matched_trialMed = nanmedian(nanmedian(within_cycle_CV2,2),3);
+    matched_cycleMed = nanmedian(nanmedian(within_cycle_CV2,3),2);
+    unmatched_Med = nanmedian(reshape(within_cycle_CV2,...
+        size(within_cycle_CV2,1),size(within_cycle_CV2,2)*size(within_cycle_CV2,3)),2);
+    for n = 1:length(collected_ISIs),
+        for n1 = 1:length(c_rep_locs),
+            for n2 = 1:nCycles(1,1),
+                scatter(stimvalues(1,n),...
+                    within_cycle_CV2(n,n2,n1),'k');
+                hold on;
+            end
+        end
+        scatter(stimvalues(1,n),matched_cycleMed(n,1),'filled','b');
+        hold on;
+        scatter(stimvalues(1,n),matched_trialMed(n,1),'filled','m');
+        scatter(stimvalues(1,n),unmatched_Med(n,1),'filled','r');
+    end
+    xlim([0 360]);
+    ylim([0 2]);
+    xlabel('Direction angle');
+    ylabel('Cycle CV2');
+    title('CV2 by stim.; all cycles');
+    if save_it == 1,
+        saveas(gcf,[pwd filesep 'CV2_bystim_medians.fig']);
+        close(f);
+    else
+    end
+    %plot CV2 by cycle
+    f = figure;
+    partial_cycleMed = nanmedian(within_cycle_CV2,3);
+    cycle_vals = 1:nCycles(1,1);
+    for n = 1:length(collected_ISIs),
+        plot(cycle_vals,partial_cycleMed(n,:));
+        hold on;
+    end
+    xlabel('Cycle number');
+    ylabel('Cycle-matched median CV2');
+    legend(cellstr(num2str(stimvalues(1,1:length(stimvalues)-1)')),...
+        'Location','EastOutside');
+    if save_it == 1,
+        saveas(gcf,[pwd filesep 'CV2_bycycle_medians.fig']);
+        close(f);
+    else
+    end
+
+    
+    %******Cycle-based Vm plots******************************
+    %********************************************************
+     allCycle_meanVm = cellfun(@mean, cycle_array_Vm);
+     allCycle_SDVm = cellfun(@std, cycle_array_Vm);
+     stim_meanVm = mean(mean(allCycle_meanVm,3),2);
+     matchedCycle_meanVm = mean(allCycle_meanVm,3);
+     %matchedCycle_SDVm{v,v1} = ...
+     %    cellfun(@(x,y) cycle_array_Vm{x,y,:},...
+     %    1:size(cycle_array_Vm),'UniformOutput',0);
+     for v = 1:length(stimvalues)-1,
+         coll_Vmcycles = [];
+         for v1=1:nCycles(1,1),
+             coll_Vmreps = [];
+             for v2=1:length(c_rep_locs),
+                coll_Vmreps = [coll_Vmreps;cycle_array_Vm{v,v1,v2}(:)];
+             end
+             cycle_SDVm(v,v1) = std(coll_Vmreps);
+             coll_Vmcycles = [coll_Vmcycles;coll_Vmreps];
+         end
+         stim_SDVm(v,1) = std(coll_Vmcycles);
+     end
+     %plot Vm SD by cycle
+     fn = figure;
+     cycle_num = 1:size(cycle_SDVm,2);
+     if ~exist('pref_stim','var'),
+         pref_stim = otpref_total;
+     else
+     end
+     if (pref_stim+180)>=360
+         nullval = (pref_stim+180)-360;
+     else
+         nullval = pref_stim+180;
+     end
+     for a = 1:size(cycle_SDVm,1),
+         nl = plot(cycle_num,cycle_SDVm(a,:));
+         if a == find(stimvalues==pref_stim)||a == find(stimvalues==nullval),
+             nl.LineWidth = 3.0;
+         else
+         end
+         hold on;
+     end
+     legend(cellstr(num2str(stimvalues')),'Location','EastOutside');
+     xlabel('Cycle number');
+     ylabel('Cycle Vm SD (mV)');
+     if save_it == 1,
+         saveas(gcf,[pwd filesep 'VmSD_bycycle.fig']);
+         close(fn);
+     else
+     end
+     %plot Vm SD as function of Vm mean
+     fs = figure;
+     for aa = 1:size(matchedCycle_meanVm,1),
+         sm = scatter(matchedCycle_meanVm(aa,:),cycle_SDVm(aa,:));
+         if aa == find(stimvalues==pref_stim)||aa == find(stimvalues==nullval),
+             sm.MarkerFaceColor = 'flat';
+         else
+         end
+         hold on;
+     end
+     legend(cellstr(num2str(stimvalues')),'Location','EastOutside');
+     xlabel('Cycle mean Vm (mV)');
+     ylabel('Cycle Vm SD (mV)');
+     if save_it == 1,
+         saveas(gcf,[pwd filesep 'VmMean_v_VmSD.fig']);
+         close(fs);
+     else
+     end
+
+else
+end
+
+if use_pre_analyzed == 0,
+    save(['_allVars_',char(date)]);
+else
+end
+    
+
+
+end
+
